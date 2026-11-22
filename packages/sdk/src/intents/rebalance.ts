@@ -109,11 +109,15 @@ export interface RebalanceEstimate {
   seconds: number;
   /**
    * The same move as one swap inside NEAR Intents, for comparison: what would arrive, or null with
-   * the reason when no market maker quotes it (often the case for large amounts).
+   * the reason and the OneClickError `code` when there is no quote. `http_error` is 1Click saying
+   * no (often no market maker for a large amount); anything else means it could not be asked.
    */
-  direct: { arrives: string } | { arrives: null; reason: string };
-  /** Which way leaves more USDC on the `to` balance. */
-  better: "rebalance" | "direct";
+  direct: { arrives: string } | { arrives: null; reason: string; code: OneClickErrorCode };
+  /**
+   * Which way leaves more USDC on the `to` balance. "unknown" when the direct swap could not be
+   * priced (1Click unreachable, timed out, 429 or 5xx): ask again before choosing.
+   */
+  better: "rebalance" | "direct" | "unknown";
 }
 
 export interface Withdrawal {
@@ -417,6 +421,7 @@ export function createRebalancer(opts: RebalancerOptions) {
     const { quote: w } = await withdrawQuote(r, fromToken, true);
     const receives = fromUnits(w.minAmountOut, fromToken.decimals);
     const x = await xebraQuote(from, to, receives, r.speed);
+    let priced = true;
     const [{ quote: d }, direct] = await Promise.all([
       depositQuote(r, toToken, x.recipientGets, true, 60),
       quote({
@@ -434,17 +439,26 @@ export function createRebalancer(opts: RebalancerOptions) {
       }).then(
         // Expected output; its floor (minAmountOut) is lower by the 0.1% slippage allowed.
         ({ quote: q }) => ({ arrives: fromUnits(q.amountOut, toToken.decimals) }),
-        (err: unknown) => ({
-          arrives: null,
-          reason: err instanceof Error ? err.message : String(err),
-        }),
+        (err: unknown) => {
+          // Only 1Click's own failures mean "no direct quote"; anything else is a bug: throw it.
+          if (!(err instanceof OneClickError)) throw err;
+          // A refusal (no market maker) settles the comparison; an outage or a bad answer does not.
+          priced = err.code === "http_error" && !err.retryable;
+          return { arrives: null, reason: err.message, code: err.code };
+        },
       ),
     ]);
     const arrives = fromUnits(d.minAmountOut, toToken.decimals);
     const withdrawFee = sub(r.amount, receives);
     const cctpFee = sub(receives, x.recipientGets);
     const better =
-      direct.arrives !== null && cmp(direct.arrives, arrives) > 0 ? "direct" : "rebalance";
+      direct.arrives !== null
+        ? cmp(direct.arrives, arrives) > 0
+          ? "direct"
+          : "rebalance"
+        : priced
+          ? "rebalance"
+          : "unknown";
     return {
       from,
       to,

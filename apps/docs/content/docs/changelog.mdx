@@ -13,6 +13,9 @@ description: What changed in the Xebra API and SDK, newest first.
 
 **SDK**, `@xebra/sdk`:
 
+- `createRebalancer().estimate`: `better` is `"unknown"` when the direct swap could not be priced
+  (1Click unreachable, timed out, 429 or 5xx), not `"rebalance"`; `direct` carries the failure's
+  `code` next to `reason`. An error that is not 1Click's is thrown instead of becoming `reason`.
 - `isXebraApiError(e)` (additive): a type guard for `XebraApiError` that also works when two copies
   of the SDK are installed, where `instanceof` does not. It checks a brand,
   `Symbol.for("xebra.error")`, and the error's `name`.
