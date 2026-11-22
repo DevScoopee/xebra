@@ -19,6 +19,11 @@ description: What changed in the Xebra API and SDK, newest first.
   the same type. `err.extra` types `minimum`, `maximum`, `have`, `need`, `total`, `limit` and
   `needs` as strings.
 
+- `quote` and `createTransfer` check their input with `QuoteRequestSchema` and
+  `TransferRequestSchema` before calling the API. Input it would refuse throws `XebraApiError` with
+  `status` 0 and code `invalid_amount` or `invalid_request`, and the problems on `extra.issues`,
+  without a request.
+
 ## 0.4.0 (2026-11-15)
 
 **SDK**, `@xebra/sdk` 0.4.0, `@xebra/sdk/intents`:
