@@ -259,6 +259,7 @@ export function createRebalancer(opts: RebalancerOptions) {
       throw new OneClickError(
         "Withdrawing from NEAR Intents needs a 1Click partner API key (oneClick.apiKey).",
         0,
+        { code: "missing_api_key" },
       );
     }
   }
@@ -292,7 +293,7 @@ export function createRebalancer(opts: RebalancerOptions) {
         json && typeof json === "object" && "message" in json && typeof json.message === "string"
           ? json.message
           : `1Click answered ${res.status}`;
-      throw new OneClickError(said, res.status);
+      throw new OneClickError(said, res.status, { body: json ?? (text || undefined) });
     }
     if (!valid(json)) {
       throw new OneClickError(
@@ -455,7 +456,12 @@ export function createRebalancer(opts: RebalancerOptions) {
     const { fromToken } = await resolve(r);
     requireKey();
     const { quote: q } = await withdrawQuote(r, fromToken, false);
-    if (!q.depositAddress) throw new OneClickError("1Click issued no deposit address.", 0);
+    if (!q.depositAddress) {
+      throw new OneClickError("1Click issued no deposit address.", 0, {
+        code: "no_deposit_address",
+        body: q,
+      });
+    }
     const { intent } = await call<{ intent: Withdrawal["intent"] }>(
       "/v0/generate-intent",
       {
@@ -508,7 +514,12 @@ export function createRebalancer(opts: RebalancerOptions) {
       throw new Error(`CCTP fees ${x.fees.total} exceed maxTotalFee ${r.maxTotalFee}.`);
     }
     const { quote: q } = await depositQuote(r, toToken, x.recipientGets, false, o.minutes ?? 120);
-    if (!q.depositAddress) throw new OneClickError("1Click issued no deposit address.", 0);
+    if (!q.depositAddress) {
+      throw new OneClickError("1Click issued no deposit address.", 0, {
+        code: "no_deposit_address",
+        body: q,
+      });
+    }
     const build = await router.buildDeposit({
       from,
       depositChain: to,
