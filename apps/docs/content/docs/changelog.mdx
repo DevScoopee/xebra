@@ -5,6 +5,12 @@ description: What changed in the Xebra API and SDK, newest first.
 
 ## Unreleased
 
+**API**:
+
+- `invalid_request` and `invalid_amount` from checking the input carry `issues`, each field that
+  failed as `{ path, message }`, beside the `detail` sentence. `openapi.json` lists it, and in
+  `@xebra/sdk` `ProblemSchema` has it as optional and `XebraApiError` carries it on `extra.issues`.
+
 **SDK**, `@xebra/sdk`:
 
 - `isXebraApiError(e)` (additive): a type guard for `XebraApiError` that also works when two copies
