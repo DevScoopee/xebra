@@ -16,6 +16,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type Attest, type Delivery, Progress } from "../../app/sui/sui-client";
 import { type DeliveryView, getDelivery, getRouteHealth } from "../../lib/circle-status";
 import { reportError } from "../../lib/format-error";
+import {
+  BUILD_TIMED_OUT,
+  fetchBeforeSigning,
+  nextPollDelay,
+  shouldShowPollNotice,
+} from "../../lib/poll-backoff";
 import { feeDestination, routeDestination } from "../../lib/route-destination";
 import { type RecipientResolution, resolveRecipient } from "../../lib/solana-recipient";
 import { claimOnStellar } from "../../lib/sui-stellar/claim-client";
@@ -267,22 +273,25 @@ export function AptosBridgeForm({
       // The account the wallet will sign with now, which may not be the one it connected with.
       const sender = (await currentAptosAccount(wallet)) ?? aptos.address;
       senderAddress = sender;
-      const res = await fetch("/api/aptos/build", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          sender,
-          amount: amount.trim(),
-          to,
-          recipient: recipient.trim(),
-          ...(plan?.ok ? { maxFee: plan.maxFee.toString() } : {}),
-        }),
-      });
-      const body = (await res.json().catch(() => ({}))) as {
+      // Only this request, before anything is signed, may time out as "nothing was sent".
+      const built = await fetchBeforeSigning<{
         error?: string;
         transaction?: { arguments: Parameters<typeof aptosBurnArgsFromJson>[0] };
         envelope?: Record<keyof Omit<AptosTxEnvelope, "sender" | "chainId">, string>;
-      };
+      }>("/api/aptos/build", {
+        sender,
+        amount: amount.trim(),
+        to,
+        recipient: recipient.trim(),
+        ...(plan?.ok ? { maxFee: plan.maxFee.toString() } : {}),
+      });
+      if (built.timedOut) {
+        reportError("aptos prepare timed out", BUILD_TIMED_OUT.raw);
+        setError({ text: BUILD_TIMED_OUT.message, declined: false });
+        return;
+      }
+      const { res } = built;
+      const body: NonNullable<typeof built.body> = built.body ?? {};
       if (!res.ok || !body.transaction || !body.envelope) {
         setError({ text: body.error ?? "Could not prepare the transfer.", declined: false });
         // A fee that moved is shown again from a fresh quote before anything is signed.
@@ -680,6 +689,7 @@ function ToStellar({
   const [recipient, setRecipient] = useState<string | null>(null);
   const [claiming, setClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
+  const [pollError, setPollError] = useState(false);
   const completing = useRef(false);
   const isTerminal = delivery.kind === "done" || delivery.kind === "stuck";
   const deliveryRef = useRef(delivery);
@@ -689,10 +699,14 @@ function ToStellar({
     if (isTerminal) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    let consecutiveFailures = 0;
 
     async function tick() {
       try {
         const s = await fetch(`/api/aptos/status?tx=${tx}`, { cache: "no-store" });
+        if (!s.ok) {
+          throw new Error(`Status service answered ${s.status}`);
+        }
         const body = (await s.json()) as {
           state?: Attest;
           delivered?: boolean;
@@ -701,6 +715,8 @@ function ToStellar({
         };
         const state: Attest = body.state ?? "unknown";
         if (cancelled) return;
+        consecutiveFailures = 0;
+        setPollError(false);
         setAttest(state);
         if (body.recipient) setRecipient(body.recipient);
 
@@ -743,9 +759,16 @@ function ToStellar({
         }
       } catch {
         completing.current = false;
-        // A dropped request is not a failed transfer; the next tick asks again.
+        if (cancelled) return;
+        consecutiveFailures += 1;
+        if (shouldShowPollNotice(consecutiveFailures)) {
+          setPollError(true);
+        }
       }
-      if (!cancelled) timer = setTimeout(tick, POLL_MS);
+      if (!cancelled) {
+        const delay = nextPollDelay(consecutiveFailures, POLL_MS);
+        timer = setTimeout(tick, delay);
+      }
     }
 
     void tick();
@@ -771,21 +794,28 @@ function ToStellar({
   }
 
   return (
-    <Progress
-      digest={tx}
-      attest={attest}
-      delivery={delivery}
-      relayerEnabled={relayerEnabled}
-      recipient={recipient}
-      stellarAddress={stellarAddress}
-      claiming={claiming}
-      claimError={claimError}
-      onClaim={onClaim}
-      onConnectStellar={onConnectStellar}
-      onRetry={() => setDelivery({ kind: "idle" })}
-      onReset={onReset}
-      sourceName="Aptos"
-      burnUrl={explorer(tx)}
-    />
+    <div className="flex flex-col gap-5">
+      {pollError && (
+        <Notice tone="info" title="We can't reach the status service right now">
+          Your transfer is safe on chain; this page keeps trying.
+        </Notice>
+      )}
+      <Progress
+        digest={tx}
+        attest={attest}
+        delivery={delivery}
+        relayerEnabled={relayerEnabled}
+        recipient={recipient}
+        stellarAddress={stellarAddress}
+        claiming={claiming}
+        claimError={claimError}
+        onClaim={onClaim}
+        onConnectStellar={onConnectStellar}
+        onRetry={() => setDelivery({ kind: "idle" })}
+        onReset={onReset}
+        sourceName="Aptos"
+        burnUrl={explorer(tx)}
+      />
+    </div>
   );
 }
