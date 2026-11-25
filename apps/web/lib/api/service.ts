@@ -1,5 +1,5 @@
 import { StrKey } from "@stellar/stellar-sdk";
-import { IrisUnavailable, type CircleHealth } from "@xebra/cctp-client";
+import { type CircleHealth, IrisUnavailable } from "@xebra/cctp-client";
 import { type BurnRecipient, FINALITY, encodeReceiveMessage } from "@xebra/cctp-evm";
 import {
   InsufficientUsdcError,
@@ -198,15 +198,27 @@ async function upstream<T>(what: string, read: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (err instanceof ApiError || err instanceof InsufficientUsdcError) throw err;
     console.error(`${what} could not be read`, err);
-    const failure = new ApiError(
+    throw new ApiError(
       "upstream_unavailable",
       `${what} could not be read just now. Try again shortly.`,
+      {},
+      err instanceof IrisUnavailable ? retryAfter(err.retryAfterMs) : {},
     );
-    if (err instanceof IrisUnavailable) {
-      Object.assign(failure, { retryAfterMs: err.retryAfterMs });
-    }
-    throw failure;
   }
+}
+
+/**
+ * `Retry-After` for a wait of `ms`, in whole seconds and at least one. A 503 without it falls back
+ * to `problem()`'s 10 seconds, which during a 5.5-minute Iris hold sends clients back 30 times.
+ */
+function retryAfter(ms: number): Record<string, string> {
+  return { "Retry-After": String(Math.max(1, Math.ceil(ms / 1000))) };
+}
+
+/** How long Circle's health check says our Iris budget is blocked for, from `nowMs`; 0 if not. */
+function holdMs(health: CircleHealth | null, nowMs: number): number {
+  const until = health?.budget?.blockedUntil ?? null;
+  return until !== null && until > nowMs ? until - nowMs : 0;
 }
 
 /** Ends a borrowed message with exactly one full stop. */
@@ -382,9 +394,14 @@ export function createService(deps: Deps, now: () => number = Date.now) {
       newAccount ? deps.circle(src, dst, true) : deps.circle(src, dst),
     );
     if (!health?.quote) {
+      // During an Iris hold the health check answers without a quote instead of throwing, so the
+      // wait has to come from its budget, not from `IrisUnavailable`.
+      const hold = holdMs(health, now());
       throw new ApiError(
         "upstream_unavailable",
         "Circle's delivery fee could not be read just now, so no price can be given. Try again shortly.",
+        {},
+        hold > 0 ? retryAfter(hold) : {},
       );
     }
     if (health.status === "down") {

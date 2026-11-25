@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { IrisUnavailable } from "@xebra/cctp-client";
 import {
   ClaimBuildSchema,
   ERROR_CODES,
@@ -9,8 +10,7 @@ import {
   TransferStatusSchema,
 } from "@xebra/sdk";
 import { stellarDestination } from "@xebra/sdk/core";
-import { IrisUnavailable } from "@xebra/cctp-client";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DELETE as catchAllDelete,
   GET as catchAllGet,
@@ -295,6 +295,22 @@ describe("failures on our side", () => {
       circle: async () => {
         throw new IrisUnavailable("rate_limited", 330_000);
       },
+    }).quote(get("/quote?from=stellar&to=base&amount=10"));
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("330");
+    expect((await problemOf(res)).code).toBe("upstream_unavailable");
+  });
+
+  it("answers 503 with the hold the health check reports, the way production sees it", async () => {
+    // The live `circle()` goes through /api/circle-health, which turns a hold into a result with no
+    // quote and a blocked budget instead of throwing.
+    const blocked = health({ quote: null });
+    const res = await api({
+      circle: async () => ({
+        ...blocked,
+        status: "degraded",
+        budget: { ...blocked.budget, blockedUntil: Date.now() + 330_000 },
+      }),
     }).quote(get("/quote?from=stellar&to=base&amount=10"));
     expect(res.status).toBe(503);
     expect(res.headers.get("retry-after")).toBe("330");

@@ -51,11 +51,16 @@ export function requestId(req?: Request): string {
   return sent && REQUEST_ID.test(sent) ? sent : crypto.randomUUID();
 }
 
-export function problem(err: ApiError, headers: Record<string, string> = {}): Response {
-  // A blocking upstream says how long to wait; the wait is a header, never a problem field.
-  const retryAfterMs = (err as ApiError & { retryAfterMs?: number }).retryAfterMs;
-  const retryAfter =
-    err.status === 503 ? String(Math.max(1, Math.ceil((retryAfterMs ?? 10_000) / 1000))) : null;
+/** The `instance` of a problem (RFC 9457): a URI for this one occurrence of it. */
+function instanceOf(id: string): string {
+  return `urn:xebra:request:${id}`;
+}
+
+export function problem(
+  err: ApiError,
+  headers: Record<string, string> = {},
+  id: string = requestId(),
+): Response {
   return Response.json(
     {
       type: `${ERROR_TYPE_BASE}${err.code}`,
@@ -77,7 +82,7 @@ export function problem(err: ApiError, headers: Record<string, string> = {}): Re
         "X-Request-Id": id,
         "Content-Type": "application/problem+json",
         "Cache-Control": "no-store",
-        ...(retryAfter ? { "Retry-After": retryAfter } : {}),
+        ...(err.status === 503 ? { "Retry-After": "10" } : {}),
         ...headers,
       },
     },
